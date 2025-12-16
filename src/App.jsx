@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import ExcelJS from 'exceljs';
 import jsPDF from 'jspdf';
 import 'jspdf-autotable';
@@ -67,14 +67,19 @@ export default function App() {
   const [showFirmaModal, setShowFirmaModal] = useState(false);
   const [tipoFirma, setTipoFirma] = useState(''); // 'conductor' o 'sst'
   const [firmas, setFirmas] = useState({
-    conductor: null, // { nombre, cc, cargo, fecha, firma }
-    sst: null        // { nombre, cc, cargo, fecha, firma }
+    conductor: null, // { nombre, cc, cargo, fecha, firma, imagenFirma }
+    sst: null        // { nombre, cc, cargo, fecha, firma, imagenFirma }
   });
   const [firmaFormData, setFirmaFormData] = useState({
     nombre: '',
     cc: '',
     cargo: ''
   });
+  
+  // Refs y estados para canvas de firma manuscrita
+  const canvasRef = useRef(null);
+  const [isDrawing, setIsDrawing] = useState(false);
+  const [hasSignature, setHasSignature] = useState(false);
   
   // Función para mostrar modal de confirmación
   const showConfirmModal = (title, message, onConfirm, onCancel = null) => {
@@ -170,6 +175,15 @@ export default function App() {
     }
   }, [currentDate, formData.placa]);
 
+  // Inicializar canvas cuando se abre el modal de firma
+  useEffect(() => {
+    if (showFirmaModal && canvasRef.current) {
+      setTimeout(() => {
+        initCanvas();
+      }, 100);
+    }
+  }, [showFirmaModal]);
+
   // Manejar carga de plantilla Excel
   const handleTemplateUpload = (e) => {
     const file = e.target.files[0];
@@ -237,6 +251,74 @@ export default function App() {
     });
   };
   
+  // Funciones para canvas de firma manuscrita
+  const getCanvasCoordinates = (e) => {
+    const canvas = canvasRef.current;
+    const rect = canvas.getBoundingClientRect();
+    const scaleX = canvas.width / rect.width;
+    const scaleY = canvas.height / rect.height;
+    
+    if (e.touches) {
+      return {
+        x: (e.touches[0].clientX - rect.left) * scaleX,
+        y: (e.touches[0].clientY - rect.top) * scaleY
+      };
+    }
+    return {
+      x: (e.clientX - rect.left) * scaleX,
+      y: (e.clientY - rect.top) * scaleY
+    };
+  };
+  
+  const startDrawing = (e) => {
+    e.preventDefault();
+    const canvas = canvasRef.current;
+    const ctx = canvas.getContext('2d');
+    const coords = getCanvasCoordinates(e);
+    
+    ctx.beginPath();
+    ctx.moveTo(coords.x, coords.y);
+    setIsDrawing(true);
+  };
+  
+  const draw = (e) => {
+    if (!isDrawing) return;
+    e.preventDefault();
+    
+    const canvas = canvasRef.current;
+    const ctx = canvas.getContext('2d');
+    const coords = getCanvasCoordinates(e);
+    
+    ctx.lineTo(coords.x, coords.y);
+    ctx.stroke();
+    setHasSignature(true);
+  };
+  
+  const stopDrawing = () => {
+    setIsDrawing(false);
+  };
+  
+  const clearCanvas = () => {
+    const canvas = canvasRef.current;
+    if (canvas) {
+      const ctx = canvas.getContext('2d');
+      ctx.clearRect(0, 0, canvas.width, canvas.height); // Limpiar completamente (transparente)
+      setHasSignature(false);
+    }
+  };
+  
+  const initCanvas = () => {
+    const canvas = canvasRef.current;
+    if (canvas) {
+      const ctx = canvas.getContext('2d');
+      ctx.clearRect(0, 0, canvas.width, canvas.height); // Transparente, sin fondo blanco
+      ctx.strokeStyle = '#1e3a5f';
+      ctx.lineWidth = 2;
+      ctx.lineCap = 'round';
+      ctx.lineJoin = 'round';
+    }
+  };
+  
   // Función para guardar firma
   const guardarFirma = () => {
     if (!firmaFormData.nombre || !firmaFormData.cc || !firmaFormData.cargo) {
@@ -252,6 +334,23 @@ export default function App() {
       return;
     }
     
+    if (!hasSignature) {
+      setModalConfig({
+        isOpen: true,
+        title: '⚠️ Firma requerida',
+        message: 'Por favor dibuje su firma manuscrita en el recuadro.',
+        confirmText: 'Entendido',
+        cancelText: null,
+        onConfirm: () => setModalConfig(prev => ({ ...prev, isOpen: false })),
+        onCancel: null
+      });
+      return;
+    }
+    
+    // Obtener imagen de la firma del canvas
+    const canvas = canvasRef.current;
+    const imagenFirma = canvas.toDataURL('image/png');
+    
     const fechaActual = new Date().toLocaleDateString('es-CO', { 
       year: 'numeric', 
       month: 'long', 
@@ -260,19 +359,21 @@ export default function App() {
       minute: '2-digit'
     });
     
-    const firmaTexto = `${firmaFormData.nombre}\nCC: ${firmaFormData.cc}\n${firmaFormData.cargo}\n\n"Firmado digitalmente el ${fechaActual}"\n✓ Grupo Ortiz - Firma Electrónica`;
+    const firmaTexto = `${firmaFormData.nombre}\nCC: ${firmaFormData.cc}\n${firmaFormData.cargo}\nFirmado: ${fechaActual}`;
     
     setFirmas(prev => ({
       ...prev,
       [tipoFirma]: {
         ...firmaFormData,
         fecha: fechaActual,
-        firma: firmaTexto
+        firma: firmaTexto,
+        imagenFirma: imagenFirma
       }
     }));
     
     setShowFirmaModal(false);
     setFirmaFormData({ nombre: '', cc: '', cargo: '' });
+    setHasSignature(false);
     
     // Mostrar confirmación
     setTimeout(() => {
@@ -299,7 +400,7 @@ export default function App() {
   // Ir a un día específico de la semana
   const goToWeekDay = async (targetDayIndex) => {
     // Obtener la fecha del lunes de la semana actual
-    const current = new Date(currentDate + 'T00:00:00');
+    const current = new Date(currentDate + 'T12:00:00'); // Usar mediodía para evitar problemas de zona horaria
     const currentDay = current.getDay();
     
     // Calcular cuántos días desde el lunes (lunes = 0 días, martes = 1, ..., domingo = 6)
@@ -312,14 +413,25 @@ export default function App() {
     const targetDate = new Date(monday);
     targetDate.setDate(monday.getDate() + targetDaysFromMonday);
     
-    const newDate = targetDate.toISOString().split('T')[0];
+    // Formatear fecha manualmente para evitar problemas de UTC
+    const year = targetDate.getFullYear();
+    const month = String(targetDate.getMonth() + 1).padStart(2, '0');
+    const day = String(targetDate.getDate()).padStart(2, '0');
+    const newDate = `${year}-${month}-${day}`;
     
-    // Verificar si el día anterior tiene datos guardados
-    const previousDay = new Date(current);
-    previousDay.setDate(previousDay.getDate() - 1);
-    const previousDateStr = previousDay.toISOString().split('T')[0];
+    console.log('🔄 Navegación:', { currentDate, targetDayIndex, newDate, mondayDate: `${monday.getFullYear()}-${String(monday.getMonth()+1).padStart(2,'0')}-${String(monday.getDate()).padStart(2,'0')}` });
+    
+    // Verificar si el día anterior AL DÍA DESTINO tiene datos guardados
+    const previousDay = new Date(targetDate);
+    previousDay.setDate(targetDate.getDate() - 1);
+    const prevYear = previousDay.getFullYear();
+    const prevMonth = String(previousDay.getMonth() + 1).padStart(2, '0');
+    const prevDay = String(previousDay.getDate()).padStart(2, '0');
+    const previousDateStr = `${prevYear}-${prevMonth}-${prevDay}`;
     const previousDayKey = `${formData.placa}_${previousDateStr}`;
     const previousData = weekData[previousDayKey];
+    
+    console.log('📋 Replicación:', { targetDate: newDate, previousDate: previousDateStr, previousDayKey, hasPreviousData: !!previousData });
     
     // Si hay datos del día anterior y el nuevo día no tiene datos, preguntar si desea replicar
     const newDayKey = `${formData.placa}_${newDate}`;
@@ -445,10 +557,13 @@ export default function App() {
     Object.values(weekData).forEach(day => {
       if (day.weekId === weekId && day.placa === formData.placa) {
         const date = new Date(day.fecha + 'T00:00:00');
-        completed.push(date.getDay());
+        const dayOfWeek = date.getDay();
+        console.log('📅 Día guardado:', day.fecha, 'getDay():', dayOfWeek, 'weekId:', day.weekId);
+        completed.push(dayOfWeek);
       }
     });
     
+    console.log('✅ Días completados:', completed, 'Semana actual:', weekId, 'Placa:', formData.placa);
     return completed;
   };
 
@@ -514,7 +629,7 @@ export default function App() {
       // ========== MAPEO DIRECTO DEL HEADER ==========
       const lastDoc = docs[docs.length - 1];
       
-      // Fila 5: C5=TIPO DE VEHICULO, H5=PLACA, M5=MODELO, V5=KM FIN
+      // Fila 5: C5=TIPO DE VEHICULO, H5=PLACA, M5=MODELO, R5=KM INICIO, V5=KM FIN
       worksheet.getCell('C5').value = lastDoc.tipoVehiculo || '';
       worksheet.getCell('C5').alignment = { vertical: 'middle', horizontal: 'center' };
       
@@ -524,8 +639,8 @@ export default function App() {
       worksheet.getCell('M5').value = lastDoc.modelo || '';
       worksheet.getCell('M5').alignment = { vertical: 'middle', horizontal: 'center' };
       
-      worksheet.getCell('V5').value = lastDoc.kmInicio || '';
-      worksheet.getCell('V5').alignment = { vertical: 'middle', horizontal: 'center' };
+      worksheet.getCell('R5').value = lastDoc.kmInicio || '';
+      worksheet.getCell('R5').alignment = { vertical: 'middle', horizontal: 'center' };
       
       // Fila 6: C6=MARCA, H6=MES AÑO, N6/R6/V6=COMBUSTIBLE
       worksheet.getCell('C6').value = lastDoc.marca || '';
@@ -592,56 +707,87 @@ export default function App() {
         worksheet.getCell('D18').alignment = { vertical: 'middle', horizontal: 'center' };
       }
       
-      // ========== FIRMAS DIGITALES (Filas 98-99) ==========
-      // Nota: Las filas tienen títulos en columna A/M, los datos van en las mismas celdas
-      // pero preservando el formato de celdas combinadas
+      // ========== FIRMAS DIGITALES CON IMAGEN ==========
+      // Usar firmas del estado actual (son para todo el consolidado semanal)
+      const firmasActuales = firmas;
+      console.log('📝 Firmas actuales:', firmasActuales);
+      console.log('📝 Conductor:', firmasActuales?.conductor);
+      console.log('📝 SST:', firmasActuales?.sst);
       
-      // Firma del CONDUCTOR (Bloque izquierdo)
-      if (lastDoc.firmas && lastDoc.firmas.conductor) {
-        // Fila 98: NOMBRE del conductor
-        // Leer el valor actual para ver si tiene un título
-        const cell98 = worksheet.getCell('A98');
-        const currentValue98 = cell98.value;
+      // Firma del CONDUCTOR (Bloque izquierdo A-L)
+      if (firmasActuales && firmasActuales.conductor) {
+        const firmaConductor = firmasActuales.conductor;
+        console.log('✅ Conductor tiene imagenFirma:', !!firmaConductor.imagenFirma);
         
-        // Si la celda tiene "NOMBRE" como título, agregar el nombre después
-        if (currentValue98 && currentValue98.toString().includes('NOMBRE')) {
-          cell98.value = lastDoc.firmas.conductor.nombre.toUpperCase();
-        } else {
-          cell98.value = lastDoc.firmas.conductor.nombre.toUpperCase();
+        // Insertar NOMBRE del conductor en fila 98
+        const cellA98 = worksheet.getCell('A98');
+        cellA98.value = `${firmaConductor.nombre.toUpperCase()}\nCC: ${firmaConductor.cc} | ${firmaConductor.cargo}`;
+        cellA98.alignment = { vertical: 'middle', horizontal: 'center', wrapText: true };
+        cellA98.font = { bold: true, size: 9 };
+        
+        // Insertar imagen de firma manuscrita en el área de FIRMA (filas 99-100)
+        if (firmaConductor.imagenFirma) {
+          try {
+            const base64Data = firmaConductor.imagenFirma.split(',')[1];
+            const imageId = workbook.addImage({
+              base64: base64Data,
+              extension: 'png'
+            });
+            // Imagen en filas 99-100, columnas A-L (índices 0-11)
+            worksheet.addImage(imageId, {
+              tl: { col: 0.5, row: 98.2 },  // Top-left (A99)
+              br: { col: 11.5, row: 100.8 } // Bottom-right (L101)
+            });
+          } catch (imgError) {
+            console.warn('Error insertando imagen de firma conductor:', imgError);
+          }
         }
-        cell98.alignment = { vertical: 'middle', horizontal: 'center' };
-        cell98.font = { bold: true, size: 11 };
         
-        // Fila 99-100: FIRMA del conductor (merged)
-        const cell99 = worksheet.getCell('A99');
-        const firmaTexto = `${lastDoc.firmas.conductor.nombre}\nCC: ${lastDoc.firmas.conductor.cc}\n${lastDoc.firmas.conductor.cargo}\nFirmado: ${lastDoc.firmas.conductor.fecha}`;
-        cell99.value = firmaTexto;
-        cell99.alignment = { 
-          vertical: 'middle', 
-          horizontal: 'center',
-          wrapText: true 
-        };
-        cell99.font = { size: 8, italic: true };
+        // Texto de fecha en firma si no hay imagen
+        if (!firmaConductor.imagenFirma) {
+          const cellA99 = worksheet.getCell('A99');
+          cellA99.value = `Firmado: ${firmaConductor.fecha}`;
+          cellA99.alignment = { vertical: 'middle', horizontal: 'center' };
+          cellA99.font = { size: 8, italic: true };
+        }
       }
       
-      // Firma del RESPONSABLE SST (Bloque derecho)
-      if (lastDoc.firmas && lastDoc.firmas.sst) {
-        // Fila 98: NOMBRE del responsable SST
-        const cellM98 = worksheet.getCell('M98');
-        cellM98.value = lastDoc.firmas.sst.nombre.toUpperCase();
-        cellM98.alignment = { vertical: 'middle', horizontal: 'center' };
-        cellM98.font = { bold: true, size: 11 };
+      // Firma del RESPONSABLE SST (Bloque derecho M-Y)
+      if (firmasActuales && firmasActuales.sst) {
+        const firmaSST = firmasActuales.sst;
+        console.log('✅ SST tiene imagenFirma:', !!firmaSST.imagenFirma);
         
-        // Fila 99-100: FIRMA del responsable SST (merged)
-        const cellM99 = worksheet.getCell('M99');
-        const firmaTextoSST = `${lastDoc.firmas.sst.nombre}\nCC: ${lastDoc.firmas.sst.cc}\n${lastDoc.firmas.sst.cargo}\nFirmado: ${lastDoc.firmas.sst.fecha}`;
-        cellM99.value = firmaTextoSST;
-        worksheet.getCell('M99').alignment = { 
-          vertical: 'middle', 
-          horizontal: 'center',
-          wrapText: true 
-        };
-        worksheet.getCell('M99').font = { size: 9, italic: true };
+        // Insertar NOMBRE del SST en fila 98
+        const cellM98 = worksheet.getCell('M98');
+        cellM98.value = `${firmaSST.nombre.toUpperCase()}\nCC: ${firmaSST.cc} | ${firmaSST.cargo}`;
+        cellM98.alignment = { vertical: 'middle', horizontal: 'center', wrapText: true };
+        cellM98.font = { bold: true, size: 9 };
+        
+        // Insertar imagen de firma manuscrita en el área de FIRMA (filas 99-100)
+        if (firmaSST.imagenFirma) {
+          try {
+            const base64Data = firmaSST.imagenFirma.split(',')[1];
+            const imageId = workbook.addImage({
+              base64: base64Data,
+              extension: 'png'
+            });
+            // Imagen en filas 99-100, columnas M-Y (índices 12-24)
+            worksheet.addImage(imageId, {
+              tl: { col: 12.5, row: 98.2 },  // Top-left (M99)
+              br: { col: 24.5, row: 100.8 }  // Bottom-right (Y101)
+            });
+          } catch (imgError) {
+            console.warn('Error insertando imagen de firma SST:', imgError);
+          }
+        }
+        
+        // Texto de fecha en firma si no hay imagen
+        if (!firmaSST.imagenFirma) {
+          const cellM99 = worksheet.getCell('M99');
+          cellM99.value = `Firmado: ${firmaSST.fecha}`;
+          cellM99.alignment = { vertical: 'middle', horizontal: 'center' };
+          cellM99.font = { size: 8, italic: true };
+        }
       }
 
       // Llenar fechas en cabecera
@@ -816,7 +962,7 @@ export default function App() {
       worksheet.getCell('C5').value = lastDoc.tipoVehiculo || '';
       worksheet.getCell('H5').value = lastDoc.placa || '';
       worksheet.getCell('M5').value = lastDoc.modelo || '';
-      worksheet.getCell('V5').value = lastDoc.kmInicio || '';
+      worksheet.getCell('R5').value = lastDoc.kmInicio || '';
       worksheet.getCell('C6').value = lastDoc.marca || '';
       worksheet.getCell('H6').value = lastDoc.mesAño || '';
       
@@ -841,32 +987,29 @@ export default function App() {
       worksheet.getCell('D17').value = lastDoc.rtm || '';
       worksheet.getCell('D18').value = lastDoc.poliza || '';
 
-      // Mapear firmas en celdas combinadas
-      if (lastDoc.firmas) {
-        if (lastDoc.firmas.conductor) {
-          const conductorText = `Nombre: ${lastDoc.firmas.conductor.nombre}\nCC: ${lastDoc.firmas.conductor.cc}\nCargo: ${lastDoc.firmas.conductor.cargo}\nFecha: ${lastDoc.firmas.conductor.fecha}`;
-          worksheet.getCell('A98').value = conductorText;
-          worksheet.getCell('A98').alignment = { wrapText: true, vertical: 'top' };
-          
-          if (lastDoc.firmas.conductor.firma) {
-            worksheet.getCell('A99').value = lastDoc.firmas.conductor.firma;
-            worksheet.getCell('A99').alignment = { wrapText: true, vertical: 'top' };
-          }
-        }
-
-        if (lastDoc.firmas.sst) {
-          const sstText = `Nombre: ${lastDoc.firmas.sst.nombre}\nCC: ${lastDoc.firmas.sst.cc}\nCargo: ${lastDoc.firmas.sst.cargo}\nFecha: ${lastDoc.firmas.sst.fecha}`;
-          worksheet.getCell('M98').value = sstText;
-          worksheet.getCell('M98').alignment = { wrapText: true, vertical: 'top' };
-          
-          if (lastDoc.firmas.sst.firma) {
-            worksheet.getCell('M99').value = lastDoc.firmas.sst.firma;
-            worksheet.getCell('M99').alignment = { wrapText: true, vertical: 'top' };
-          }
-        }
+      // ========== FIRMAS: Solo datos de texto (las imágenes se agregan al PDF después) ==========
+      const firmasActuales = firmas;
+      console.log('📝 [PDF] Firmas actuales:', firmasActuales);
+      
+      // Firma del CONDUCTOR - Solo texto (las imágenes se agregan al PDF después)
+      if (firmasActuales && firmasActuales.conductor) {
+        const firmaConductor = firmasActuales.conductor;
+        const cellA98 = worksheet.getCell('A98');
+        cellA98.value = `${firmaConductor.nombre.toUpperCase()}\nCC: ${firmaConductor.cc} | ${firmaConductor.cargo}`;
+        cellA98.alignment = { vertical: 'middle', horizontal: 'center', wrapText: true };
+        cellA98.font = { bold: true, size: 9 };
+      }
+      
+      // Firma del RESPONSABLE SST - Solo texto
+      if (firmasActuales && firmasActuales.sst) {
+        const firmaSST = firmasActuales.sst;
+        const cellM98 = worksheet.getCell('M98');
+        cellM98.value = `${firmaSST.nombre.toUpperCase()}\nCC: ${firmaSST.cc} | ${firmaSST.cargo}`;
+        cellM98.alignment = { vertical: 'middle', horizontal: 'center', wrapText: true };
+        cellM98.font = { bold: true, size: 9 };
       }
 
-      // Mapear fechas en encabezados
+      // Mapear fechas en encabezados (formato: día/mes/año)
       docs.forEach(dayDoc => {
         const dateObj = new Date(dayDoc.fecha + 'T00:00:00');
         const dayOfWeek = dateObj.getDay();
@@ -875,7 +1018,10 @@ export default function App() {
           const dayKey = ['LUNES', 'MARTES', 'MIERCOLES', 'JUEVES', 'VIERNES', 'SABADO', 'DOMINGO'][blockIdx];
           const dateCell = DATE_HEADER_CELLS[dayKey];
           if (dateCell) {
-            worksheet.getCell(dateCell).value = dateObj.getDate();
+            const dia = String(dateObj.getDate()).padStart(2, '0');
+            const mes = String(dateObj.getMonth() + 1).padStart(2, '0');
+            const año = dateObj.getFullYear();
+            worksheet.getCell(dateCell).value = `${dia}/${mes}/${año}`;
           }
         }
       });
@@ -912,6 +1058,19 @@ export default function App() {
 
       // Convertir workbook a buffer
       const excelBuffer = await workbook.xlsx.writeBuffer();
+      
+      // Debug: Verificar cuántas imágenes tiene el workbook
+      console.log('🖼️ Imágenes en el workbook:', workbook.model?.media?.length || 0);
+      console.log('📊 Tamaño del Excel buffer:', excelBuffer.byteLength, 'bytes');
+      
+      // DEBUG: Descargar Excel para verificar imágenes (comentar después)
+      // const blobTest = new Blob([excelBuffer], { type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' });
+      // const urlTest = URL.createObjectURL(blobTest);
+      // const linkTest = document.createElement('a');
+      // linkTest.href = urlTest;
+      // linkTest.download = `DEBUG_Excel_${lastDoc.placa}_${weekId}.xlsx`;
+      // linkTest.click();
+      // URL.revokeObjectURL(urlTest);
 
       // Enviar al backend para conversión a PDF
       try {
@@ -932,9 +1091,79 @@ export default function App() {
           throw new Error(`Error del servidor: ${response.statusText}`);
         }
 
-        const pdfBlob = await response.blob();
+        // Obtener PDF base del backend
+        const pdfBaseBlobOriginal = await response.blob();
+        console.log('📄 PDF base recibido del backend:', pdfBaseBlobOriginal.size, 'bytes');
+        
+        // Agregar firmas al PDF usando pdf-lib
+        let pdfFinalBlob = pdfBaseBlobOriginal;
+        
+        if (firmasActuales && (firmasActuales.conductor || firmasActuales.sst)) {
+          try {
+            const { PDFDocument } = await import('pdf-lib');
+            
+            // Cargar el PDF base
+            const pdfBaseBytes = await pdfBaseBlobOriginal.arrayBuffer();
+            const pdfDoc = await PDFDocument.load(pdfBaseBytes);
+            const pages = pdfDoc.getPages();
+            const firstPage = pages[0];
+            const { width, height } = firstPage.getSize();
+            
+            console.log('📐 Dimensiones del PDF:', width, 'x', height);
+            
+            // Insertar firma del CONDUCTOR (área izquierda, más abajo, fila FIRMA)
+            if (firmasActuales.conductor && firmasActuales.conductor.imagenFirma) {
+              const firmaConductor = firmasActuales.conductor;
+              const imagenBase64 = firmaConductor.imagenFirma.split(',')[1];
+              const imagenBytes = Uint8Array.from(atob(imagenBase64), c => c.charCodeAt(0));
+              const firmaImage = await pdfDoc.embedPng(imagenBytes);
+              
+              // Posición ajustada: más abajo y tamaño reducido
+              firstPage.drawImage(firmaImage, {
+                x: 40,           // Inicio columna A (con margen)
+                y: 10,           // Más abajo en la fila FIRMA
+                width: 180,      // Ancho reducido
+                height: 28,      // Alto reducido
+                opacity: 1       // Completamente opaco
+              });
+              
+              console.log('✅ Firma del conductor insertada en PDF (ajustada)');
+            }
+            
+            // Insertar firma del SST (área derecha, más abajo, fila FIRMA)
+            if (firmasActuales.sst && firmasActuales.sst.imagenFirma) {
+              const firmaSST = firmasActuales.sst;
+              const imagenBase64 = firmaSST.imagenFirma.split(',')[1];
+              const imagenBytes = Uint8Array.from(atob(imagenBase64), c => c.charCodeAt(0));
+              const firmaImage = await pdfDoc.embedPng(imagenBytes);
+              
+              // Posición ajustada: más abajo y tamaño reducido
+              firstPage.drawImage(firmaImage, {
+                x: 330,          // Inicio columna M
+                y: 10,           // Más abajo en la fila FIRMA
+                width: 180,      // Ancho reducido
+                height: 28,      // Alto reducido
+                opacity: 1       // Completamente opaco
+              });
+              
+              console.log('✅ Firma del SST insertada en PDF (ajustada)');
+            }
+            
+            // Guardar PDF con firmas
+            const pdfModifiedBytes = await pdfDoc.save();
+            pdfFinalBlob = new Blob([pdfModifiedBytes], { type: 'application/pdf' });
+            console.log('📄 PDF final con firmas:', pdfFinalBlob.size, 'bytes');
+            
+          } catch (pdfError) {
+            console.error('❌ Error insertando firmas en PDF:', pdfError);
+            // Si falla, usar el PDF sin firmas
+            pdfFinalBlob = pdfBaseBlobOriginal;
+          }
+        }
+        
+        // Descargar PDF final
         const pdfFileName = `Preoperacional_${lastDoc.placa}_${weekId}.pdf`;
-        const url = window.URL.createObjectURL(pdfBlob);
+        const url = window.URL.createObjectURL(pdfFinalBlob);
         const link = document.createElement('a');
         link.href = url;
         link.download = pdfFileName;
@@ -1419,7 +1648,7 @@ export default function App() {
               const isCompleted = completedDays.includes(day.idx);
               
               // Calcular la fecha de este día basándonos en el lunes de la semana
-              const current = new Date(currentDate + 'T00:00:00');
+              const current = new Date(currentDate + 'T12:00:00'); // Mediodía para evitar problemas de TZ
               const currentDay = current.getDay();
               // Calcular cuántos días desde el lunes
               const daysFromMonday = currentDay === 0 ? 6 : currentDay - 1;
@@ -2262,7 +2491,7 @@ export default function App() {
       </div>
     )}
     
-    {/* Modal de Firma Digital */}
+    {/* Modal de Firma Digital con Canvas */}
     {showFirmaModal && (
       <div style={{
         position: 'fixed',
@@ -2275,48 +2504,47 @@ export default function App() {
         alignItems: 'center',
         justifyContent: 'center',
         zIndex: 10000,
-        padding: '20px'
+        padding: '16px',
+        overflowY: 'auto'
       }}>
         <div style={{
           backgroundColor: '#ffffff',
           borderRadius: '16px',
-          maxWidth: '450px',
+          maxWidth: '400px',
           width: '100%',
+          maxHeight: '95vh',
+          overflowY: 'auto',
           boxShadow: '0 20px 25px -5px rgba(0, 0, 0, 0.1), 0 10px 10px -5px rgba(0, 0, 0, 0.04)',
           animation: 'slideIn 0.2s ease-out'
         }}>
           {/* Header */}
           <div style={{
-            padding: '20px 24px',
+            padding: '16px 20px',
             borderBottom: '2px solid #e5e7eb',
             background: 'linear-gradient(135deg, #059669 0%, #10b981 100%)',
-            borderRadius: '16px 16px 0 0'
+            borderRadius: '16px 16px 0 0',
+            position: 'sticky',
+            top: 0,
+            zIndex: 1
           }}>
             <h3 style={{
               margin: 0,
-              fontSize: '18px',
+              fontSize: '16px',
               fontWeight: '700',
               color: '#ffffff',
               display: 'flex',
               alignItems: 'center',
               gap: '8px'
             }}>
-              ✍️ Firma Digital - {tipoFirma === 'conductor' ? 'Conductor' : 'Responsable SST'}
+              ✍️ {tipoFirma === 'conductor' ? 'Firma Conductor' : 'Firma Responsable SST'}
             </h3>
           </div>
           
           {/* Formulario */}
-          <div style={{
-            padding: '24px'
-          }}>
-            <div style={{ marginBottom: '16px' }}>
-              <label style={{ 
-                display: 'block', 
-                fontSize: '13px', 
-                fontWeight: '600', 
-                color: '#374151', 
-                marginBottom: '6px' 
-              }}>
+          <div style={{ padding: '16px' }}>
+            {/* Campos de datos */}
+            <div style={{ marginBottom: '12px' }}>
+              <label style={{ display: 'block', fontSize: '12px', fontWeight: '600', color: '#374151', marginBottom: '4px' }}>
                 Nombre Completo *
               </label>
               <input
@@ -2326,100 +2554,126 @@ export default function App() {
                 placeholder="Ej: Juan Pérez García"
                 style={{
                   width: '100%',
-                  padding: '12px',
+                  padding: '10px',
                   border: '2px solid #e5e7eb',
                   borderRadius: '8px',
                   fontSize: '14px',
-                  boxSizing: 'border-box',
-                  transition: 'border-color 0.2s'
+                  boxSizing: 'border-box'
                 }}
-                onFocus={(e) => e.target.style.borderColor = '#10b981'}
-                onBlur={(e) => e.target.style.borderColor = '#e5e7eb'}
               />
             </div>
             
-            <div style={{ marginBottom: '16px' }}>
-              <label style={{ 
-                display: 'block', 
-                fontSize: '13px', 
-                fontWeight: '600', 
-                color: '#374151', 
-                marginBottom: '6px' 
-              }}>
-                Cédula de Ciudadanía *
-              </label>
-              <input
-                type="text"
-                value={firmaFormData.cc}
-                onChange={(e) => setFirmaFormData(prev => ({ ...prev, cc: e.target.value.replace(/\D/g, '') }))}
-                placeholder="Ej: 1234567890"
-                style={{
-                  width: '100%',
-                  padding: '12px',
-                  border: '2px solid #e5e7eb',
-                  borderRadius: '8px',
-                  fontSize: '14px',
-                  boxSizing: 'border-box',
-                  transition: 'border-color 0.2s'
-                }}
-                onFocus={(e) => e.target.style.borderColor = '#10b981'}
-                onBlur={(e) => e.target.style.borderColor = '#e5e7eb'}
-              />
-            </div>
-            
-            <div style={{ marginBottom: '20px' }}>
-              <label style={{ 
-                display: 'block', 
-                fontSize: '13px', 
-                fontWeight: '600', 
-                color: '#374151', 
-                marginBottom: '6px' 
-              }}>
-                Cargo *
-              </label>
-              <input
-                type="text"
-                value={firmaFormData.cargo}
-                onChange={(e) => setFirmaFormData(prev => ({ ...prev, cargo: e.target.value }))}
-                placeholder={tipoFirma === 'conductor' ? 'Ej: Conductor' : 'Ej: Responsable SST'}
-                style={{
-                  width: '100%',
-                  padding: '12px',
-                  border: '2px solid #e5e7eb',
-                  borderRadius: '8px',
-                  fontSize: '14px',
-                  boxSizing: 'border-box',
-                  transition: 'border-color 0.2s'
-                }}
-                onFocus={(e) => e.target.style.borderColor = '#10b981'}
-                onBlur={(e) => e.target.style.borderColor = '#e5e7eb'}
-              />
-            </div>
-            
-            {/* Preview de firma */}
-            <div style={{
-              padding: '16px',
-              backgroundColor: '#f0fdf4',
-              border: '2px dashed #10b981',
-              borderRadius: '8px',
-              marginBottom: '20px'
-            }}>
-              <div style={{ fontSize: '11px', fontWeight: '600', color: '#059669', marginBottom: '8px' }}>
-                👁️ Vista previa de la firma:
+            <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '12px', marginBottom: '12px' }}>
+              <div>
+                <label style={{ display: 'block', fontSize: '12px', fontWeight: '600', color: '#374151', marginBottom: '4px' }}>
+                  Cédula *
+                </label>
+                <input
+                  type="text"
+                  value={firmaFormData.cc}
+                  onChange={(e) => setFirmaFormData(prev => ({ ...prev, cc: e.target.value.replace(/\D/g, '') }))}
+                  placeholder="1234567890"
+                  style={{
+                    width: '100%',
+                    padding: '10px',
+                    border: '2px solid #e5e7eb',
+                    borderRadius: '8px',
+                    fontSize: '14px',
+                    boxSizing: 'border-box'
+                  }}
+                />
               </div>
-              <div style={{ 
-                fontSize: '13px', 
-                color: '#374151', 
-                lineHeight: '1.6',
-                fontStyle: 'italic'
+              <div>
+                <label style={{ display: 'block', fontSize: '12px', fontWeight: '600', color: '#374151', marginBottom: '4px' }}>
+                  Cargo *
+                </label>
+                <input
+                  type="text"
+                  value={firmaFormData.cargo}
+                  onChange={(e) => setFirmaFormData(prev => ({ ...prev, cargo: e.target.value }))}
+                  placeholder={tipoFirma === 'conductor' ? 'Conductor' : 'Resp. SST'}
+                  style={{
+                    width: '100%',
+                    padding: '10px',
+                    border: '2px solid #e5e7eb',
+                    borderRadius: '8px',
+                    fontSize: '14px',
+                    boxSizing: 'border-box'
+                  }}
+                />
+              </div>
+            </div>
+            
+            {/* Canvas de firma manuscrita */}
+            <div style={{ marginBottom: '12px' }}>
+              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '6px' }}>
+                <label style={{ fontSize: '12px', fontWeight: '600', color: '#374151' }}>
+                  ✍️ Firma Manuscrita *
+                </label>
+                <button
+                  onClick={clearCanvas}
+                  style={{
+                    padding: '4px 10px',
+                    backgroundColor: '#fee2e2',
+                    color: '#dc2626',
+                    border: 'none',
+                    borderRadius: '6px',
+                    fontSize: '11px',
+                    fontWeight: '600',
+                    cursor: 'pointer'
+                  }}
+                >
+                  🗑️ Limpiar
+                </button>
+              </div>
+              <div style={{
+                border: hasSignature ? '2px solid #10b981' : '2px dashed #d1d5db',
+                borderRadius: '8px',
+                backgroundColor: '#ffffff',
+                overflow: 'hidden',
+                touchAction: 'none'
               }}>
-                {firmaFormData.nombre || '[Nombre completo]'}<br />
-                CC: {firmaFormData.cc || '[Cédula]'}<br />
-                {firmaFormData.cargo || '[Cargo]'}<br />
-                <br />
-                <span style={{ fontSize: '11px', color: '#6b7280' }}>
-                  "Firmado digitalmente el {new Date().toLocaleDateString('es-CO')}"<br />
-                  ✓ Grupo Ortiz - Firma Electrónica
+                <canvas
+                  ref={canvasRef}
+                  width={350}
+                  height={120}
+                  style={{
+                    width: '100%',
+                    height: '120px',
+                    cursor: 'crosshair',
+                    display: 'block'
+                  }}
+                  onMouseDown={startDrawing}
+                  onMouseMove={draw}
+                  onMouseUp={stopDrawing}
+                  onMouseLeave={stopDrawing}
+                  onTouchStart={startDrawing}
+                  onTouchMove={draw}
+                  onTouchEnd={stopDrawing}
+                />
+              </div>
+              <p style={{ fontSize: '10px', color: '#6b7280', margin: '4px 0 0', textAlign: 'center' }}>
+                Dibuje su firma con el dedo o mouse
+              </p>
+            </div>
+            
+            {/* Vista previa compacta */}
+            <div style={{
+              padding: '12px',
+              backgroundColor: '#f0fdf4',
+              border: '1px solid #10b981',
+              borderRadius: '8px',
+              marginBottom: '12px'
+            }}>
+              <div style={{ fontSize: '10px', fontWeight: '600', color: '#059669', marginBottom: '6px' }}>
+                📋 Resumen de firma:
+              </div>
+              <div style={{ fontSize: '11px', color: '#374151', lineHeight: '1.5' }}>
+                <strong>{firmaFormData.nombre || '---'}</strong><br />
+                CC: {firmaFormData.cc || '---'} | {firmaFormData.cargo || '---'}<br />
+                <span style={{ fontSize: '10px', color: '#6b7280' }}>
+                  📅 {new Date().toLocaleDateString('es-CO', { day: '2-digit', month: 'short', year: 'numeric' })} 
+                  {' '}🕐 {new Date().toLocaleTimeString('es-CO', { hour: '2-digit', minute: '2-digit' })}
                 </span>
               </div>
             </div>
@@ -2427,56 +2681,54 @@ export default function App() {
           
           {/* Footer */}
           <div style={{
-            padding: '16px 24px',
+            padding: '12px 16px',
             backgroundColor: '#f9fafb',
             borderTop: '1px solid #e5e7eb',
             borderRadius: '0 0 16px 16px',
             display: 'flex',
-            gap: '12px',
-            justifyContent: 'flex-end'
+            gap: '10px',
+            justifyContent: 'flex-end',
+            position: 'sticky',
+            bottom: 0
           }}>
             <button
               onClick={() => {
                 setShowFirmaModal(false);
                 setFirmaFormData({ nombre: '', cc: '', cargo: '' });
+                setHasSignature(false);
               }}
               style={{
-                padding: '10px 20px',
+                padding: '10px 16px',
                 backgroundColor: '#ffffff',
                 color: '#6b7280',
                 border: '1px solid #d1d5db',
                 borderRadius: '8px',
-                fontSize: '14px',
+                fontSize: '13px',
                 fontWeight: '600',
-                cursor: 'pointer',
-                transition: 'all 0.2s'
+                cursor: 'pointer'
               }}
-              onMouseEnter={(e) => e.currentTarget.style.backgroundColor = '#f3f4f6'}
-              onMouseLeave={(e) => e.currentTarget.style.backgroundColor = '#ffffff'}
             >
               Cancelar
             </button>
             
             <button
               onClick={guardarFirma}
+              disabled={!firmaFormData.nombre || !firmaFormData.cc || !firmaFormData.cargo || !hasSignature}
               style={{
-                padding: '10px 24px',
-                backgroundColor: '#059669',
+                padding: '10px 20px',
+                backgroundColor: (!firmaFormData.nombre || !firmaFormData.cc || !firmaFormData.cargo || !hasSignature) ? '#9ca3af' : '#059669',
                 color: '#ffffff',
                 border: 'none',
                 borderRadius: '8px',
-                fontSize: '14px',
+                fontSize: '13px',
                 fontWeight: '600',
-                cursor: 'pointer',
-                transition: 'all 0.2s',
+                cursor: (!firmaFormData.nombre || !firmaFormData.cc || !firmaFormData.cargo || !hasSignature) ? 'not-allowed' : 'pointer',
                 display: 'flex',
                 alignItems: 'center',
                 gap: '6px'
               }}
-              onMouseEnter={(e) => e.currentTarget.style.backgroundColor = '#047857'}
-              onMouseLeave={(e) => e.currentTarget.style.backgroundColor = '#059669'}
             >
-              ✓ Confirmar Firma
+              ✓ Guardar Firma
             </button>
           </div>
         </div>

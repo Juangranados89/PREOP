@@ -7,12 +7,20 @@ export const getLocalDate = () => {
 };
 
 export const getWeekNumber = (dateString) => {
-  const d = new Date(dateString);
-  const date = new Date(Date.UTC(d.getFullYear(), d.getMonth(), d.getDate()));
-  date.setUTCDate(date.getUTCDate() + 4 - (date.getUTCDay() || 7));
-  var yearStart = new Date(Date.UTC(date.getUTCFullYear(),0,1));
-  var weekNo = Math.ceil(( ( (date - yearStart) / 86400000) + 1)/7);
-  return `${date.getUTCFullYear()}-W${weekNo}`;
+  const d = new Date(dateString + 'T12:00:00'); // Mediodía para evitar problemas de TZ
+  // Obtener el día de la semana (0=Domingo, 1=Lunes, ..., 6=Sábado)
+  const dayOfWeek = d.getDay();
+  // Calcular el lunes de esa semana
+  const diff = dayOfWeek === 0 ? -6 : 1 - dayOfWeek; // Si es domingo, retroceder 6 días
+  const monday = new Date(d);
+  monday.setDate(d.getDate() + diff);
+  
+  // Usar la fecha del lunes como identificador único de semana (YYYY-MM-DD)
+  const year = monday.getFullYear();
+  const month = String(monday.getMonth() + 1).padStart(2, '0');
+  const day = String(monday.getDate()).padStart(2, '0');
+  
+  return `${year}-${month}-${day}`;
 };
 
 export const arrayBufferToBase64 = (buffer) => {
